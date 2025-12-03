@@ -2,69 +2,128 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# ---------- Page settings ----------
+# ----------------- Page config -----------------
 st.set_page_config(
     page_title="Witness Archive: ICE Raids in Chicago",
     page_icon="📚",
     layout="wide",
 )
 
-# ---------- Load data ----------
+
+# ----------------- Helpers -----------------
+def pick_column(df, candidates, default=None):
+    """Return the first column name from candidates that exists in df."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return default
+
+
 @st.cache_data
 def load_data():
     df = pd.read_csv("ICE_Chicago_REAL_dataset.csv")
-    if "Publication Date" in df.columns:
-        df["Publication Date"] = pd.to_datetime(df["Publication Date"], errors="coerce")
-    return df
 
-df = load_data()
+    # Try to detect key columns
+    title_col = pick_column(df, ["Title", "Article Title", "Headline"])
+    emotion_col = pick_column(df, ["Emotion", "Primary Emotion", "emotion_label"])
+    theme_col = pick_column(df, ["Theme", "Primary Theme", "Topic"])
+    source_col = pick_column(df, ["Source", "Outlet", "Publication"])
+    date_col = pick_column(df, ["Publication Date", "Date", "Published", "Date Published"])
+    text_col = pick_column(
+        df,
+        ["Quote", "Narrative", "Excerpt", "Snippet", "Summary", "Full Text", "Text", "Content", "Body"],
+    )
+    url_col = pick_column(df, ["URL", "Link", "Article URL"])
 
-# ---------- Title + subtitle ----------
+    # Convert dates, if present
+    if date_col and date_col in df.columns:
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
+    meta = {
+        "title_col": title_col,
+        "emotion_col": emotion_col,
+        "theme_col": theme_col,
+        "source_col": source_col,
+        "date_col": date_col,
+        "text_col": text_col,
+        "url_col": url_col,
+    }
+    return df, meta
+
+
+df, meta = load_data()
+
+title_col = meta["title_col"]
+emotion_col = meta["emotion_col"]
+theme_col = meta["theme_col"]
+source_col = meta["source_col"]
+date_col = meta["date_col"]
+text_col = meta["text_col"]
+url_col = meta["url_col"]
+
+# ----------------- Header -----------------
 st.markdown(
     "<h1 style='margin-bottom:0'>Witness Archive: Chicago ICE Enforcement</h1>",
     unsafe_allow_html=True,
 )
 st.markdown(
-    "<p style='color:#666; margin-top:0.25rem; margin-bottom:1rem'>"
-    "Explore testimonies, emotions, themes, and sources from the ICE raids corpus."
+    "<p style='color:#666; margin-top:0.3rem; margin-bottom:1rem'>"
+    "Interactive dashboard for exploring testimonies, emotions, themes, and news sources "
+    "from the Chicago ICE raids corpus."
     "</p>",
     unsafe_allow_html=True,
 )
 
-# ---------- Sidebar filters ----------
+with st.expander("Detected columns (for debugging)", expanded=False):
+    st.write(meta)
+
+# ----------------- Sidebar Filters -----------------
 st.sidebar.title("Filters")
 
 # Emotion filter
-if "Emotion" in df.columns:
-    emotions = sorted(df["Emotion"].dropna().unique())
+if emotion_col:
+    emotion_values = sorted(df[emotion_col].dropna().unique())
     selected_emotions = st.sidebar.multiselect(
-        "Emotion", emotions, default=emotions
+        "Emotion", options=emotion_values, default=emotion_values
     )
 else:
     selected_emotions = None
 
 # Theme filter
-if "Theme" in df.columns:
-    themes = sorted(df["Theme"].dropna().unique())
+if theme_col:
+    theme_values = sorted(df[theme_col].dropna().unique())
     selected_themes = st.sidebar.multiselect(
-        "Theme", themes, default=themes
+        "Theme", options=theme_values, default=theme_values
     )
 else:
     selected_themes = None
 
-# Source filter
-if "Source" in df.columns:
-    sources = sorted(df["Source"].dropna().unique())
+# Source filter (handles hundreds of sources)
+if source_col:
+    all_sources = sorted(df[source_col].dropna().unique().tolist())
+    st.sidebar.caption(f"Total unique sources: {len(all_sources)}")
+
+    source_search = st.sidebar.text_input(
+        "Filter sources by name (optional)", value="", placeholder="Type part of name…"
+    )
+
+    if source_search:
+        filtered_sources_list = [s for s in all_sources if source_search.lower() in str(s).lower()]
+    else:
+        filtered_sources_list = all_sources
+
     selected_sources = st.sidebar.multiselect(
-        "Source", sources, default=sources
+        "Sources (scroll for more)",
+        options=filtered_sources_list,
+        default=filtered_sources_list,  # select all visible by default
     )
 else:
     selected_sources = None
 
 # Date range filter
-if "Publication Date" in df.columns:
-    min_date = df["Publication Date"].min()
-    max_date = df["Publication Date"].max()
+if date_col:
+    min_date = df[date_col].min()
+    max_date = df[date_col].max()
     if pd.notna(min_date) and pd.notna(max_date):
         start_date, end_date = st.sidebar.date_input(
             "Publication date range",
@@ -77,44 +136,40 @@ if "Publication Date" in df.columns:
 else:
     start_date, end_date = None, None
 
-# ---------- Apply filters ----------
+# ----------------- Apply Filters -----------------
 filtered_df = df.copy()
 
-if selected_emotions:
-    filtered_df = filtered_df[filtered_df["Emotion"].isin(selected_emotions)]
+if emotion_col and selected_emotions:
+    filtered_df = filtered_df[filtered_df[emotion_col].isin(selected_emotions)]
 
-if selected_themes:
-    filtered_df = filtered_df[filtered_df["Theme"].isin(selected_themes)]
+if theme_col and selected_themes:
+    filtered_df = filtered_df[filtered_df[theme_col].isin(selected_themes)]
 
-if selected_sources:
-    filtered_df = filtered_df[filtered_df["Source"].isin(selected_sources)]
+if source_col and selected_sources:
+    filtered_df = filtered_df[filtered_df[source_col].isin(selected_sources)]
 
-if (
-    start_date is not None
-    and end_date is not None
-    and "Publication Date" in filtered_df.columns
-):
+if date_col and start_date and end_date:
     mask = (
-        filtered_df["Publication Date"].dt.date >= start_date
+        filtered_df[date_col].dt.date >= start_date
     ) & (
-        filtered_df["Publication Date"].dt.date <= end_date
+        filtered_df[date_col].dt.date <= end_date
     )
     filtered_df = filtered_df[mask]
 
-# ---------- Light styling ----------
+# ----------------- Light CSS styling -----------------
 st.markdown(
-    '''
+    """
     <style>
     .metric-card {
         padding: 1rem 1.25rem;
-        border-radius: 0.75rem;
-        border: 1px solid #eee;
+        border-radius: 0.9rem;
+        border: 1px solid #eeeeee;
         background-color: #fafafa;
     }
     .quote-card {
         padding: 1.5rem;
-        border-radius: 0.75rem;
-        border: 1px solid #eee;
+        border-radius: 0.9rem;
+        border: 1px solid #eeeeee;
         background-color: #ffffff;
     }
     .meta-line {
@@ -123,60 +178,113 @@ st.markdown(
         margin-bottom: 0.75rem;
     }
     </style>
-    ''',
+    """,
     unsafe_allow_html=True,
 )
 
-# ---------- Overview metrics ----------
+# ----------------- Overview metrics -----------------
 st.subheader("Overview")
 
-m1, m2, m3 = st.columns(3)
-with m1:
+col_a, col_b, col_c, col_d = st.columns(4)
+
+with col_a:
     st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-    st.metric("Total testimonies", len(df))
+    st.metric("Total rows", len(df))
     st.markdown("</div>", unsafe_allow_html=True)
 
-with m2:
+with col_b:
     st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
     st.metric("After filters", len(filtered_df))
     st.markdown("</div>", unsafe_allow_html=True)
 
-with m3:
+with col_c:
     st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
-    if "Source" in df.columns:
-        st.metric("Unique sources", df["Source"].nunique())
+    if source_col:
+        st.metric("Unique sources", df[source_col].nunique())
     else:
-        st.metric("Unique sources", "N/A")
+        st.metric("Unique sources", "—")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with col_d:
+    st.markdown("<div class='metric-card'>", unsafe_allow_html=True)
+    if date_col and df[date_col].notna().any():
+        date_min = df[date_col].min().date()
+        date_max = df[date_col].max().date()
+        st.metric("Date range", f"{date_min} → {date_max}")
+    else:
+        st.metric("Date range", "—")
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
-# ---------- Charts row ----------
-left_charts, right_charts = st.columns(2)
+# ----------------- Tabs Layout -----------------
+tab_overview, tab_emotions, tab_sources, tab_data = st.tabs(
+    ["📈 Time & counts", "🎭 Emotions & themes", "📰 Sources", "📑 Data & testimony viewer"]
+)
 
-with left_charts:
-    if "Emotion" in filtered_df.columns and not filtered_df.empty:
-        emotion_counts = (
-            filtered_df["Emotion"]
-            .value_counts()
-            .reset_index()
-            .rename(columns={"index": "Emotion", "Emotion": "Count"})
+# ----- Tab 1: Time & counts -----
+with tab_overview:
+    if date_col and not filtered_df.empty:
+        by_date = (
+            filtered_df.dropna(subset=[date_col])
+            .groupby(filtered_df[date_col].dt.date)
+            .size()
+            .reset_index(name="Count")
+            .sort_values(date_col)
         )
-        fig_emotion = px.bar(
-            emotion_counts,
-            x="Emotion",
+        fig_time = px.line(
+            by_date,
+            x=date_col,
             y="Count",
-            title="Emotion distribution",
+            markers=True,
+            title="Number of testimonies over time",
         )
-        st.plotly_chart(fig_emotion, use_container_width=True)
+        st.plotly_chart(fig_time, use_container_width=True)
+    else:
+        st.info("No valid date column available for timeline chart.")
 
-with right_charts:
-    if "Theme" in filtered_df.columns and not filtered_df.empty:
-        theme_counts = (
-            filtered_df["Theme"]
+
+# ----- Tab 2: Emotions & themes -----
+with tab_emotions:
+    c1, c2 = st.columns(2)
+
+    if emotion_col and not filtered_df.empty:
+        emotion_counts = (
+            filtered_df[emotion_col]
             .value_counts()
             .reset_index()
-            .rename(columns={"index": "Theme", "Theme": "Count"})
+            .rename(columns={emotion_col: "Count", "index": "Emotion"})
+        )
+
+        with c1:
+            fig_bar_emotion = px.bar(
+                emotion_counts,
+                x="Emotion",
+                y="Count",
+                title="Emotion distribution (bar)",
+            )
+            st.plotly_chart(fig_bar_emotion, use_container_width=True)
+
+        with c2:
+            fig_pie_emotion = px.pie(
+                emotion_counts,
+                names="Emotion",
+                values="Count",
+                title="Emotion share (pie)",
+                hole=0.3,
+            )
+            st.plotly_chart(fig_pie_emotion, use_container_width=True)
+    else:
+        st.info("No emotion column found or no data after filters.")
+
+    st.markdown("---")
+
+    if theme_col and not filtered_df.empty:
+        theme_counts = (
+            filtered_df[theme_col]
+            .value_counts()
+            .reset_index()
+            .rename(columns={theme_col: "Count", "index": "Theme"})
         )
         fig_theme = px.bar(
             theme_counts,
@@ -185,98 +293,129 @@ with right_charts:
             title="Theme distribution",
         )
         st.plotly_chart(fig_theme, use_container_width=True)
+    else:
+        st.info("No theme column found or no data after filters.")
 
-st.markdown("---")
 
-# ---------- Testimony explorer ----------
-st.subheader("Testimony explorer")
-
-if filtered_df.empty:
-    st.info("No data matches the selected filters. Try relaxing them to see testimonies.")
-else:
-    # newest first if date exists
-    if "Publication Date" in filtered_df.columns:
-        filtered_df = filtered_df.sort_values("Publication Date", ascending=False)
-
-    # Build nice labels for dropdown
-    label_to_index = {}
-    labels = []
-
-    for idx, row in filtered_df.iterrows():
-        title = row["Title"] if "Title" in row and pd.notna(row["Title"]) else "Untitled"
-        pieces = []
-        if "Source" in row and pd.notna(row["Source"]):
-            pieces.append(str(row["Source"]))
-        if "Publication Date" in row and pd.notna(row["Publication Date"]):
-            pieces.append(row["Publication Date"].strftime("%Y-%m-%d"))
-
-        label = title
-        if pieces:
-            label = f"{title} — " + " | ".join(pieces)
-
-        label_to_index[label] = idx
-        labels.append(label)
-
-    selected_label = st.selectbox("Choose a testimony", options=labels)
-    selected_row = filtered_df.loc[label_to_index[selected_label]]
-
-    viewer_col, table_col = st.columns([2, 3])
-
-    # ---- Left: quote card ----
-    with viewer_col:
-        st.markdown("<div class='quote-card'>", unsafe_allow_html=True)
-
-        title_text = (
-            selected_row["Title"]
-            if "Title" in selected_row and pd.notna(selected_row["Title"])
-            else "Untitled"
+# ----- Tab 3: Sources -----
+with tab_sources:
+    if source_col and not filtered_df.empty:
+        src_counts = (
+            filtered_df[source_col]
+            .value_counts()
+            .reset_index()
+            .rename(columns={source_col: "Count", "index": "Source"})
         )
-        st.markdown(f"### {title_text}")
 
-        meta_parts = []
-        if "Source" in selected_row and pd.notna(selected_row["Source"]):
-            meta_parts.append(str(selected_row["Source"]))
-        if "Publication Date" in selected_row and pd.notna(selected_row["Publication Date"]):
-            meta_parts.append(selected_row["Publication Date"].strftime("%Y-%m-%d"))
-        if "Emotion" in selected_row and pd.notna(selected_row["Emotion"]):
-            meta_parts.append(f"Emotion: {selected_row['Emotion']}")
-        if "Theme" in selected_row and pd.notna(selected_row["Theme"]):
-            meta_parts.append(f"Theme: {selected_row['Theme']}")
+        st.caption(f"Total unique sources in filtered data: {src_counts['Source'].nunique()}")
 
-        if meta_parts:
-            meta_html = " • ".join(meta_parts)
-            st.markdown(f"<div class='meta-line'>{meta_html}</div>", unsafe_allow_html=True)
+        fig_src_top = px.bar(
+            src_counts.head(25),
+            x="Source",
+            y="Count",
+            title="Top sources by number of testimonies (top 25)",
+        )
+        fig_src_top.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig_src_top, use_container_width=True)
 
-        text_column_candidates = [
-            "Quote",
-            "Excerpt",
-            "Snippet",
-            "Summary",
-            "Full Text",
-            "Text",
-        ]
-        text_to_show = None
-        for c in text_column_candidates:
-            if c in selected_row and pd.notna(selected_row[c]):
-                text_to_show = selected_row[c]
-                break
+        if emotion_col:
+            by_src_emotion = (
+                filtered_df.groupby([source_col, emotion_col])
+                .size()
+                .reset_index(name="Count")
+            )
+            fig_src_emotion = px.bar(
+                by_src_emotion,
+                x=source_col,
+                y="Count",
+                color=emotion_col,
+                title="Emotion by source (stacked)",
+            )
+            fig_src_emotion.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_src_emotion, use_container_width=True)
+    else:
+        st.info("No source column found or no data after filters.")
 
-        if text_to_show:
-            st.write(text_to_show)
-        else:
-            st.write("No narrative text available for this entry.")
 
-        if "URL" in selected_row and pd.notna(selected_row["URL"]):
-            st.markdown(f"[Open original article]({selected_row['URL']})")
+# ----- Tab 4: Data & testimony viewer -----
+with tab_data:
+    if filtered_df.empty:
+        st.info("No rows match the current filters. Try relaxing them.")
+    else:
+        # sort by date if possible
+        if date_col:
+            filtered_df = filtered_df.sort_values(date_col, ascending=False)
 
-        st.markdown("</div>", unsafe_allow_html=True)
+        # Build labels for dropdown
+        labels = []
+        indices = []
 
-    # ---- Right: filtered table ----
-    with table_col:
-        st.caption("Filtered dataset (top 200 rows)")
-        show_cols = [
-            c
-            for c in ["Title", "Emotion", "Theme", "Source", "Publication Date", "URL"]
-            if c in filtered_df.columns
-        ]
-        st.dataframe(filtered_df[show_cols].head(200), use_container_width=True)
+        for idx, row in filtered_df.iterrows():
+            title_val = str(row[title_col]) if title_col and pd.notna(row[title_col]) else "Untitled"
+            source_val = str(row[source_col]) if source_col and pd.notna(row[source_col]) else "Unknown source"
+            if date_col and pd.notna(row[date_col]):
+                date_val = row[date_col].strftime("%Y-%m-%d")
+            else:
+                date_val = "No date"
+
+            label = f"{title_val} — {source_val} — {date_val}"
+            labels.append(label)
+            indices.append(idx)
+
+        selected_label = st.selectbox("Choose a testimony", options=labels)
+        selected_index = indices[labels.index(selected_label)]
+        selected_row = filtered_df.loc[selected_index]
+
+        left, right = st.columns([2, 3])
+
+        # ---- Left: quote/details card ----
+        with left:
+            st.markdown("<div class='quote-card'>", unsafe_allow_html=True)
+
+            title_val = (
+                str(selected_row[title_col])
+                if title_col and pd.notna(selected_row[title_col])
+                else "Untitled testimony"
+            )
+            st.markdown(f"### {title_val}")
+
+            meta_parts = []
+            if source_col and pd.notna(selected_row.get(source_col, None)):
+                meta_parts.append(str(selected_row[source_col]))
+            if date_col and pd.notna(selected_row.get(date_col, None)):
+                meta_parts.append(selected_row[date_col].strftime("%Y-%m-%d"))
+            if emotion_col and pd.notna(selected_row.get(emotion_col, None)):
+                meta_parts.append(f"Emotion: {selected_row[emotion_col]}")
+            if theme_col and pd.notna(selected_row.get(theme_col, None)):
+                meta_parts.append(f"Theme: {selected_row[theme_col]}")
+
+            if meta_parts:
+                meta_html = " • ".join(meta_parts)
+                st.markdown(f"<div class='meta-line'>{meta_html}</div>", unsafe_allow_html=True)
+
+            # Show main narrative text
+            if text_col and pd.notna(selected_row.get(text_col, None)):
+                st.write(selected_row[text_col])
+            else:
+                st.write("No narrative text available for this entry.")
+
+            # URL link
+            if url_col and pd.notna(selected_row.get(url_col, None)):
+                url_val = str(selected_row[url_col])
+                st.markdown(f"[Open original article]({url_val})")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # ---- Right: table ----
+        with right:
+            st.caption("Filtered dataset (first 200 rows). Scroll horizontally for more columns.")
+            display_cols = []
+            for c in [title_col, emotion_col, theme_col, source_col, date_col, url_col]:
+                if c and c not in display_cols:
+                    display_cols.append(c)
+            # add some extra cols if needed
+            for c in df.columns:
+                if c not in display_cols:
+                    display_cols.append(c)
+
+            st.dataframe(filtered_df[display_cols].head(200), use_container_width=True)
